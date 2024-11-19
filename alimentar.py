@@ -7,7 +7,7 @@ from datetime import datetime
 app = Flask(__name__)
 
 # Configure the app with the database URI (adjust for your DB)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:root12345678@localhost:3306/treinos'  # Ajuste conforme seu banco de dados
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:GOHsTtNTFUpXUfdZTmQYzZxZgyixWVGc@junction.proxy.rlwy.net:50339/railway'  # Ajuste conforme seu banco de dados
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # Initialize the db instance with the app
@@ -17,13 +17,14 @@ db.init_app(app)
 @app.route('/alimentar_exercicios')
 def alimentar_exercicios():
     # Requisição para a API ExerciseDB
-    url = "https://exercisedb.p.rapidapi.com/exercises/bodyPart/neck?offset=0&limit=200"
+    url = "https://exercisedb.p.rapidapi.com/exercises"
+    querystring = {"limit":"0","offset":"0"}
     headers = {
         'x-rapidapi-key': "dc4eadccaamsh989ba4fab96604dp11faf9jsn8a092f9da256",
         'x-rapidapi-host': "exercisedb.p.rapidapi.com"
     }
 
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=headers, params=querystring)
 
     if response.status_code == 200:
         exercises = response.json()
@@ -41,26 +42,7 @@ def alimentar_exercicios():
             db.session.add(exercicio)
         
         db.session.commit()
-        return f"{len(exercises)} exercícios inseridos com sucesso!"
-    else:
-        return f"Erro ao acessar a API: {response.status_code}"
-
-
-@app.route('/teste')
-def teste():
-    # Requisição para a API ExerciseDB
-    url = "https://exercisedb.p.rapidapi.com/exercises"
-    querystring = {"limit":"0","offset":"0"}
-    headers = {
-        'x-rapidapi-key': "dc4eadccaamsh989ba4fab96604dp11faf9jsn8a092f9da256",
-        'x-rapidapi-host': "exercisedb.p.rapidapi.com"
-    }
-
-    response = requests.get(url, headers=headers, params=querystring)
-
-    if response.status_code == 200:
-        exercises = response.json()
-        return f"{len(exercises)} exercícios inseridos com sucesso!"
+        return "exercícios inseridos com sucesso!"
     else:
         return f"Erro ao acessar a API: {response.status_code}"
 
@@ -90,6 +72,7 @@ def atualizar_exercicios():
         return "Exercícios atualizados com sucesso!"
     else:
         return f"Erro ao acessar a API: {response.status_code}"
+        
 
 
 
