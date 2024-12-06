@@ -1,14 +1,16 @@
 from flask import Blueprint, request, jsonify
-from app.models import Treino, Exercicio, Usuario, TreinoFinalizado, treino_exercicio
+from app.models import Treino, Exercicio, Usuario, TreinoFinalizado, treino_exercicio, ExercicioTempo
 from app.utils.db_file import db
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
+from sqlalchemy import update
 
 treino_routes = Blueprint('treino_routes', __name__)
 
 @treino_routes.route('/treinos', methods=['GET'])
 def listar_treinos():
-    treinos = Treino.query.all()
+    privacidade = request.args.get('privacidade', 'publico')
+    treinos = Treino.query.filter_by(privacidade=privacidade).all();
     return jsonify([{'id': t.id, 'nome': t.nome, 'descricao': t.descricao, 'intensidade': t.intensidade} for t in treinos])
 
 @treino_routes.route('/treino', methods=['POST'])
@@ -20,6 +22,7 @@ def criar_treino():
     nome = data.get('nome')
     descricao = data.get('descricao')
     intensidade = data.get('intensidade')
+    privacidade = data.get('privacidade', 'privado')
     exercicios_data = data.get('exercicios')  # Exemplo: [{'id': 1, 'series': 3, 'repeticoes': 12}, ...]
 
     if not exercicios_data or not isinstance(exercicios_data, list):
@@ -32,7 +35,7 @@ def criar_treino():
         return jsonify({'error': 'Um ou mais exercícios não foram encontrados'}), 404
 
     # Criação do treino
-    novo_treino = Treino(nome=nome, descricao=descricao, intensidade=intensidade, usuario_id=usuario_atual)
+    novo_treino = Treino(nome=nome, descricao=descricao, intensidade=intensidade, privacidade=privacidade, usuario_id=usuario_atual)
     db.session.add(novo_treino)
     db.session.commit()  # Commit para gerar o ID do treino
 
@@ -41,16 +44,24 @@ def criar_treino():
         ex_id = ex_data['id']
         series = ex_data.get('series', 0)
         repeticoes = ex_data.get('repeticoes', 0)
+        peso = ex_data.get('peso', 0)
         db.session.execute(
             treino_exercicio.insert().values(
                 treino_id=novo_treino.id,  # O ID agora é garantido
                 exercicio_id=ex_id,
                 series=series,
-                repeticoes=repeticoes
+                repeticoes=repeticoes,
+                peso=peso
             )
         )
 
     db.session.commit()  # Commit final para salvar a associação
+
+    usuario = Usuario.query.get(usuario_atual)
+    
+    if novo_treino not in usuario.favoritos:
+        usuario.favoritos.append(novo_treino)
+        db.session.commit()
     return jsonify({'mensagem': 'Treino criado com sucesso!'}), 201
 
 
@@ -59,12 +70,34 @@ def pesquisar_treinos():
     query = request.args.get('query', '')
 
     treinos = Treino.query.filter(
-        (Treino.nome.ilike(f'%{query}%')) | 
-        (Treino.descricao.ilike(f'%{query}%'))
+        ((Treino.nome.ilike(f'%{query}%')) | 
+        (Treino.descricao.ilike(f'%{query}%'))) &
+        (Treino.privacidade == 'publico')
     ).all()
 
     return jsonify([{'id': t.id, 'nome': t.nome, 'descricao': t.descricao, 'intensidade': t.intensidade} for t in treinos])
 
+@treino_routes.route('/treinos/intensidade', methods=['GET'])
+def get_treino_intensidade():
+    intensidade = request.args.get('intensidade') 
+    
+    if intensidade:
+        treinos = Treino.query.filter_by(intensidade=intensidade, privacidade='publico').all()
+    else:
+        treinos = Treino.query.filter_by(privacidade='publico').all()
+
+    if not treinos:
+        return jsonify({'message': 'Nenhum treino encontrado com essa intensidade e privacidade pública.'}), 404
+    
+    treinos_data = [{
+        'id': treino.id,
+        'nome': treino.nome,
+        'descricao': treino.descricao,
+        'intensidade': treino.intensidade,
+    } for treino in treinos]
+
+    return jsonify({'treinos': treinos_data}), 200
+    
 @treino_routes.route('/treinos/<int:treino_id>', methods=['GET'])
 def get_treino(treino_id):
     treino = Treino.query.get(treino_id)
@@ -79,18 +112,21 @@ def get_treino(treino_id):
         Exercicio.nome,
         Exercicio.descricao,
         Exercicio.categoria,
-        Exercicio.equipamento
+        Exercicio.equipamento,
+        treino_exercicio.c.peso
     ).join(Exercicio, Exercicio.id == treino_exercicio.c.exercicio_id) \
      .filter(treino_exercicio.c.treino_id == treino_id)
 
     exercicios_data = [
         {
+            'id': ex[0],
             'nome': ex[3],  # Nome do exercício
             'descricao': ex[4],  # Descrição do exercício
             'categoria': ex[5],  # Categoria do exercício
             'equipamento': ex[6],  # Equipamento do exercício
             'series': ex[1],  # Séries do exercício
-            'repeticoes': ex[2]  # Repetições do exercício
+            'repeticoes': ex[2],  # Repetições do exercício
+            'peso': ex[7] #Peso do exercício
         }
         for ex in treino_exercicios
     ]
@@ -101,6 +137,7 @@ def get_treino(treino_id):
         'descricao': treino.descricao,
         'intensidade': treino.intensidade,
         'dataCriacao': treino.data_criacao,
+        'privacidade': treino.privacidade,
         'exercicios': exercicios_data
     })
 
@@ -172,6 +209,7 @@ def finalizar_treino():
     treino_id = data.get('treino_id')  
     usuario_id = get_jwt_identity()
     total_time = data.get('total_time')
+    exercicios_tempos = data['exercicios_tempos']
     
     treino = Treino.query.get(treino_id)
     usuario = Usuario.query.get(usuario_id)
@@ -183,6 +221,17 @@ def finalizar_treino():
     
     treino_finalizado = TreinoFinalizado(treino_id=treino.id, usuario_id=usuario.id, total_time=total_time)
     db.session.add(treino_finalizado)
+    db.session.commit()
+
+    for item in exercicios_tempos:
+        exercicio_tempo = ExercicioTempo(
+            treino_finalizado_id = treino_finalizado.id,
+            exercicio_id = item['exercicio_id'],
+            tempo = item['tempo']
+        )
+
+        db.session.add(exercicio_tempo)
+
     db.session.commit()
     
     return jsonify({'mensagem': 'Treino finalizado com sucesso!'}), 200
@@ -199,14 +248,31 @@ def listar_treinos_finalizados():
     
     treinos_finalizados = TreinoFinalizado.query.filter_by(usuario_id=usuario.id).all()
     
-    return jsonify([{
-        'id': tf.id,
-        'treino_id': tf.treino.id,
-        'nome': tf.treino.nome,
-        'descricao': tf.treino.descricao,
-        'data_finalizacao': tf.data_finalizacao,
-        'total_time': tf.total_time
-    } for tf in treinos_finalizados]), 200
+    response = []
+    for tf in treinos_finalizados:
+        treino_data = {
+            'id': tf.id,
+            'treino_id': tf.treino.id,
+            'nome': tf.treino.nome,
+            'descricao': tf.treino.descricao,
+            'data_finalizacao': tf.data_finalizacao,
+            'total_time': tf.total_time,
+            'exercicios': []  # Lista de exercícios para este treino
+        }
+
+        # Buscar os tempos dos exercícios para o treino finalizado
+        exercicios_tempos = db.session.query(ExercicioTempo).filter_by(treino_finalizado_id=tf.id).all()
+        
+        for et in exercicios_tempos:
+            treino_data['exercicios'].append({
+                'nome': et.exercicio.nome,
+                'tempo': et.tempo  # Tempo do exercício em segundos
+            })
+        
+        response.append(treino_data)
+    
+    return jsonify(response), 200
+
 
 @treino_routes.route('/treinos/frequencia', methods=['GET'])
 @jwt_required() 
@@ -214,44 +280,50 @@ def contar_frequencia_treinos():
     usuario_id = get_jwt_identity() 
     
     usuario = Usuario.query.get(usuario_id)
-    
     if not usuario:
         return jsonify({'error': 'Usuário não encontrado'}), 404
     
     treinos_finalizados = TreinoFinalizado.query.filter_by(usuario_id=usuario.id).all()
     
-    intervalos = {
-        '1-7': 0,
-        '8-15': 0,
-        '16-23': 0,
-        '24-31': 0
-    }
+    # Estrutura para armazenar os dados agrupados por mês
+    frequencia_por_mes = {}
 
     for tf in treinos_finalizados:
         data_finalizacao = tf.data_finalizacao
         if data_finalizacao:
             if isinstance(data_finalizacao, datetime):
-                day = data_finalizacao.day  
+                data = data_finalizacao
             else:
                 try:
-                    data_finalizacao = datetime.strptime(data_finalizacao, "%Y-%m-%d %H:%M:%S")
-                    day = data_finalizacao.day
+                    data = datetime.strptime(data_finalizacao, "%Y-%m-%d %H:%M:%S")
                 except ValueError:
                     print(f"Erro ao converter data: {data_finalizacao}")
                     continue
+            
+            mes = data.strftime('%Y-%m')  # Exemplo: '2024-12'
+            dia = data.day
+            
+            if mes not in frequencia_por_mes:
+                frequencia_por_mes[mes] = {
+                    '1-7': 0,
+                    '8-15': 0,
+                    '16-23': 0,
+                    '24-31': 0
+                }
+            
+            if 1 <= dia <= 7:
+                frequencia_por_mes[mes]['1-7'] += 1
+            elif 8 <= dia <= 15:
+                frequencia_por_mes[mes]['8-15'] += 1
+            elif 16 <= dia <= 23:
+                frequencia_por_mes[mes]['16-23'] += 1
+            elif 24 <= dia <= 31:
+                frequencia_por_mes[mes]['24-31'] += 1
 
-            if 1 <= day <= 7:
-                intervalos['1-7'] += 1
-            elif 8 <= day <= 15:
-                intervalos['8-15'] += 1
-            elif 16 <= day <= 23:
-                intervalos['16-23'] += 1
-            elif 24 <= day <= 31:
-                intervalos['24-31'] += 1
-
+    # Formatação dos dados para o frontend
     dados_formatados = [
-        {'label': intervalo, 'valor': contagem} 
-        for intervalo, contagem in intervalos.items()
+        {'mes': mes, 'frequencia': [{'label': intervalo, 'valor': contagem} for intervalo, contagem in intervalos.items()]}
+        for mes, intervalos in frequencia_por_mes.items()
     ]
 
     return jsonify(dados_formatados), 200
@@ -261,7 +333,7 @@ def contar_frequencia_treinos():
 def alterar_treino(treino_id):
     data = request.get_json()
     usuario_id = get_jwt_identity()
-    
+
     # Verifica se o treino existe
     treino = Treino.query.get(treino_id)
     if treino is None:
@@ -275,47 +347,67 @@ def alterar_treino(treino_id):
     treino.nome = data.get('nome', treino.nome)
     treino.descricao = data.get('descricao', treino.descricao)
     treino.intensidade = data.get('intensidade', treino.intensidade)
+    treino.privacidade = data.get('privacidade', treino.privacidade)
 
-    # Atualiza os exercícios associados
+    # Atualiza os exercícios associados (adicionar/atualizar/remover)
     exercicios_data = data.get('exercicios')  # Exemplo: [{'id': 1, 'series': 4, 'repeticoes': 10}, ...]
-
     if exercicios_data:
         if not isinstance(exercicios_data, list):
             return jsonify({'error': 'Dados de exercícios inválidos ou não fornecidos'}), 400
 
-        # Verifica se todos os itens têm a chave 'id'
-        try:
-            exercicios_ids = [ex['id'] for ex in exercicios_data if 'id' in ex]
-        except KeyError as e:
-            return jsonify({'error': f"Erro nos dados do exercício: {str(e)}"}), 400
+        # IDs dos exercícios recebidos na requisição
+        novos_exercicios_ids = [ex['id'] for ex in exercicios_data if 'id' in ex]
 
-        # Busca os exercícios no banco
-        exercicios = Exercicio.query.filter(Exercicio.id.in_(exercicios_ids)).all()
+        # IDs dos exercícios atualmente associados ao treino
+        exercicios_associados = db.session.query(treino_exercicio.c.exercicio_id).filter_by(treino_id=treino.id).all()
+        exercicios_associados_ids = [ex[0] for ex in exercicios_associados]
 
-        if not exercicios or len(exercicios) != len(exercicios_ids):
-            return jsonify({'error': 'Um ou mais exercícios não foram encontrados'}), 404
+        # Exercícios a remover
+        exercicios_a_remover = set(exercicios_associados_ids) - set(novos_exercicios_ids)
+        if exercicios_a_remover:
+            db.session.execute(
+                treino_exercicio.delete().where(
+                    treino_exercicio.c.treino_id == treino.id,
+                    treino_exercicio.c.exercicio_id.in_(exercicios_a_remover)
+                )
+            )
 
-        # Remove associações antigas do treino
-        db.session.execute(
-            treino_exercicio.delete().where(treino_exercicio.c.treino_id == treino.id)
-        )
-        
-        # Cria novas associações com séries e repetições atualizadas
+        # Adicionar ou atualizar os exercícios fornecidos
         for ex_data in exercicios_data:
             ex_id = ex_data.get('id')
             series = ex_data.get('series', 0)
             repeticoes = ex_data.get('repeticoes', 0)
-            if ex_id:  # Verifica se o ID é válido antes de continuar
-                db.session.execute(
-                    treino_exercicio.insert().values(
-                        treino_id=treino.id,
-                        exercicio_id=ex_id,
-                        series=series,
-                        repeticoes=repeticoes
-                    )
+            peso = ex_data.get('peso', 0)
+
+            if ex_id:
+                # Atualiza ou cria a associação
+                stmt = (
+                    update(treino_exercicio)
+                    .where(treino_exercicio.c.treino_id == treino.id)
+                    .where(treino_exercicio.c.exercicio_id == ex_id)
+                    .values(series=series, repeticoes=repeticoes, peso=peso)
                 )
+                result = db.session.execute(stmt)
 
+                if result.rowcount == 0:
+                    db.session.execute(
+                        treino_exercicio.insert().values(
+                            treino_id=treino.id,
+                            exercicio_id=ex_id,
+                            series=series,
+                            repeticoes=repeticoes,
+                            peso=peso
+                        )
+                    )
 
-    # Commit final para salvar alterações
-    db.session.commit()
+    # Commit final para salvar as alterações do treino
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f"Erro ao salvar o treino: {str(e)}"}), 500
+
     return jsonify({'mensagem': 'Treino atualizado com sucesso!'}), 200
+
+
+

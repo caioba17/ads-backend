@@ -4,7 +4,8 @@ treino_exercicio = db.Table('treino_exercicio',
     db.Column('treino_id', db.Integer, db.ForeignKey('treino.id'), primary_key=True),
     db.Column('exercicio_id', db.Integer, db.ForeignKey('exercicios.id'), primary_key=True),
     db.Column('series', db.Integer),
-    db.Column('repeticoes', db.Integer)
+    db.Column('repeticoes', db.Integer),
+     db.Column('peso', db.Float)
 )
 
 usuario_treino = db.Table('usuario_treino',
@@ -19,6 +20,7 @@ class Treino(db.Model):
     intensidade = db.Column(db.String(50), nullable=False)
     data_criacao = db.Column(db.DateTime, default=db.func.current_timestamp())
     usuario_id = db.Column(db.Integer, db.ForeignKey('usuario.id'))
+    privacidade = db.Column(db.String(20), default='privado')
     exercicios = db.relationship('Exercicio', secondary=treino_exercicio, lazy='subquery',
                                  backref=db.backref('treinos', lazy=True))
     
@@ -80,6 +82,23 @@ class TreinoFinalizado(db.Model):
 
     def __repr__(self):
         return f'<TreinoFinalizado {self.id}>'
+    
+class ExercicioTempo(db.Model):
+    __tablename__ = 'exercicios_tempo'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    treino_finalizado_id = db.Column(db.Integer, db.ForeignKey('treinos_finalizados.id'), nullable=False)
+    exercicio_id = db.Column(db.Integer, db.ForeignKey('exercicios.id'), nullable=False)
+    tempo = db.Column(db.Integer)  # Tempo em segundos
+    data_inicio = db.Column(db.DateTime, default=db.func.current_timestamp())
+    data_fim = db.Column(db.DateTime, default=db.func.current_timestamp())
+    
+    treino_finalizado = db.relationship('TreinoFinalizado', backref=db.backref('exercicios_tempo', lazy=True))
+    exercicio = db.relationship('Exercicio', backref=db.backref('tempos', lazy=True))
+
+    def __repr__(self):
+        return f'<ExercicioTempo {self.id}, TreinoFinalizado {self.treino_finalizado_id}, Exercicio {self.exercicio_id}>'
+
     
 
 
